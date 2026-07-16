@@ -179,6 +179,13 @@
     .tray-actions button:first-child { border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.05); color: white; }
     .tray-actions button:last-child { border: 0; background: var(--green); color: #061019; }
     .return-message { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 30px; background: #07111a; text-align: center; }
+    .return-message > div { width: min(100%, 410px); }
+    .return-message h2 { margin: 0; font-size: 30px; letter-spacing: -.04em; }
+    .return-message p { margin: 13px 0 0; color: var(--muted); line-height: 1.55; }
+    .return-actions { display: grid; gap: 10px; margin-top: 23px; }
+    .return-actions button { min-height: 54px; border-radius: 15px; font-weight: 800; cursor: pointer; }
+    .return-actions button:first-child { border: 0; background: var(--green); color: #061019; }
+    .return-actions button:last-child { border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.05); color: white; }
   </style>
 </head>
 <body>
@@ -226,7 +233,16 @@
     <div class="tray-actions"><button id="addPageButton" type="button">Add a page</button><button id="usePagesButton" type="button">Use these pages</button></div>
   </section>
 
-  <div class="return-message" id="returnMessage" hidden><div><h2>Pages sent to Paperwork AI</h2><p>You can close this screen and return to the app.</p></div></div>
+  <div class="return-message" id="returnMessage" hidden>
+    <div>
+      <h2 id="returnTitle">Sending pages…</h2>
+      <p id="returnDetail">Keep this scanner open while Paperwork AI confirms the pages.</p>
+      <div class="return-actions">
+        <button id="retryReturnButton" type="button" hidden>Try sending again</button>
+        <button id="closeReturnButton" type="button" hidden>Close scanner</button>
+      </div>
+    </div>
+  </div>
   <canvas id="detectionCanvas" hidden></canvas>
 
   <script>
@@ -249,6 +265,10 @@
       precisionBusy: false,
       precisionFailed: false,
       precisionMisses: 0,
+      returnPayload: null,
+      returnTimer: 0,
+      returnAttempts: 0,
+      returnAcknowledged: false,
     };
 
     const video = document.getElementById('cameraVideo');
@@ -269,8 +289,11 @@
     $('trayClose').addEventListener('click', hideTray);
     $('addPageButton').addEventListener('click', hideTray);
     $('usePagesButton').addEventListener('click', returnPages);
+    $('retryReturnButton').addEventListener('click', retryReturnPages);
+    $('closeReturnButton').addEventListener('click', closeScanner);
     window.addEventListener('resize', resizeOverlay);
     window.addEventListener('orientationchange', () => setTimeout(resizeOverlay, 200));
+    window.addEventListener('message', receiveReturnAcknowledgement);
     window.addEventListener('pagehide', stopCamera);
     $('autoBadgeText').textContent = 'Precision starting…';
     initialisePrecisionDetector();
@@ -900,17 +923,80 @@
     function returnPages() {
       if (!state.pages.length) return;
       stopCamera();
-      const message = { type: 'paperwork-ai-pages', token: sessionToken, pages: state.pages };
-      if (window.opener && !window.opener.closed) {
-        window.opener.postMessage(message, '*');
-        $('trayView').hidden = true;
-        $('scannerView').hidden = true;
-        $('returnMessage').hidden = false;
-        setTimeout(() => window.close(), 180);
-      } else {
-        $('trayView').hidden = true;
-        $('returnMessage').hidden = false;
+      state.returnPayload = { type: 'paperwork-ai-pages', token: sessionToken, pages: state.pages };
+      state.returnAcknowledged = false;
+      state.returnAttempts = 0;
+      $('trayView').hidden = true;
+      $('scannerView').hidden = true;
+      setReturnStatus('Sending pages…', 'Keep this scanner open while Paperwork AI confirms the pages.');
+      sendReturnPages();
+    }
+
+    function retryReturnPages() {
+      state.returnAttempts = 0;
+      state.returnAcknowledged = false;
+      setReturnStatus('Sending pages…', 'Keep this scanner open while Paperwork AI confirms the pages.');
+      sendReturnPages();
+    }
+
+    function sendReturnPages() {
+      clearTimeout(state.returnTimer);
+      if (!state.returnPayload || state.returnAcknowledged) return;
+
+      if (!window.opener || window.opener.closed) {
+        setReturnStatus(
+          'Pages have not been sent',
+          'Paperwork AI could not be reached. Return to Paperwork AI and use the normal camera option for this scan. Nothing has been uploaded yet.',
+          true,
+        );
+        return;
       }
+
+      try {
+        window.opener.postMessage(state.returnPayload, '*');
+      } catch (_) {
+        setReturnStatus(
+          'Pages have not been sent',
+          'Paperwork AI could not be reached. Keep this screen open, return to Paperwork AI, then try again.',
+          true,
+        );
+        return;
+      }
+
+      state.returnAttempts += 1;
+      if (state.returnAttempts >= 24) {
+        setReturnStatus(
+          'Still waiting for Paperwork AI',
+          'The pages are not confirmed or uploaded. Keep this scanner open, return to Paperwork AI, then tap Try sending again.',
+          true,
+        );
+        return;
+      }
+      state.returnTimer = setTimeout(sendReturnPages, 500);
+    }
+
+    function receiveReturnAcknowledgement(event) {
+      const message = event.data;
+      if (!isReturnAcknowledgement(message, sessionToken) || state.returnAcknowledged) return;
+      state.returnAcknowledged = true;
+      clearTimeout(state.returnTimer);
+      setReturnStatus(
+        'Pages received',
+        'Paperwork AI is opening the supplier check. If this screen stays open, close it—the pages are safe.',
+      );
+      setTimeout(() => window.close(), 900);
+    }
+
+    function isReturnAcknowledgement(message, token) {
+      return Boolean(message && message.type === 'paperwork-ai-pages-received' && message.token === token);
+    }
+
+    function setReturnStatus(title, detail, showActions = false) {
+      $('returnTitle').textContent = title;
+      $('returnDetail').textContent = detail;
+      $('retryReturnButton').hidden = !showActions;
+      $('closeReturnButton').hidden = !showActions;
+      $('returnMessage').hidden = false;
     }
 
     function stopCamera() {
