@@ -1,0 +1,863 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#03070a">
+  <title>Paperwork AI Scanner</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --text: #f7fafb;
+      --muted: #a7b5be;
+      --blue: #5bbcf3;
+      --green: #5ee0aa;
+      --amber: #ffd36c;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; min-height: 100%; margin: 0; overflow: hidden; background: #03070a; color: var(--text); }
+    button { font: inherit; -webkit-tap-highlight-color: transparent; }
+    [hidden] { display: none !important; }
+
+    .permission {
+      min-height: 100vh;
+      min-height: 100dvh;
+      display: grid;
+      align-content: center;
+      padding: max(28px, env(safe-area-inset-top)) 24px max(28px, env(safe-area-inset-bottom));
+      background: radial-gradient(circle at 50% 18%, rgba(91,188,243,.18), transparent 25rem), #07111a;
+      text-align: center;
+    }
+    .permission-icon {
+      width: 76px;
+      height: 76px;
+      display: grid;
+      place-items: center;
+      margin: 0 auto 22px;
+      border: 1px solid rgba(91,188,243,.38);
+      border-radius: 24px;
+      background: rgba(91,188,243,.12);
+      color: var(--blue);
+    }
+    .permission h1 { max-width: 390px; margin: 0 auto; font-size: clamp(30px, 9vw, 44px); line-height: 1.04; letter-spacing: -.04em; }
+    .permission p { max-width: 410px; margin: 15px auto 0; color: var(--muted); font-size: 15px; line-height: 1.55; }
+    .permission-list { max-width: 370px; display: grid; gap: 10px; margin: 25px auto; padding: 0; list-style: none; color: #d7e2e8; text-align: left; font-size: 13px; }
+    .permission-list li { display: flex; gap: 10px; }
+    .permission-list span { color: var(--green); font-weight: 900; }
+    .action {
+      width: min(100%, 390px);
+      min-height: 56px;
+      margin: 0 auto;
+      border: 0;
+      border-radius: 16px;
+      background: linear-gradient(135deg, var(--blue), #8bd8ff);
+      color: #061019;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .cancel { margin: 14px auto 0; padding: 8px 16px; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+    .permission-error { max-width: 410px; margin: 16px auto 0; color: #ffadad; font-size: 13px; line-height: 1.45; }
+
+    .scanner { position: relative; width: 100vw; height: 100vh; height: 100dvh; overflow: hidden; background: #000; }
+    .camera-stage { position: absolute; inset: 0 0 152px; display: grid; place-items: center; overflow: hidden; }
+    video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+    #edgeOverlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .flash { position: absolute; inset: 0; background: white; opacity: 0; pointer-events: none; }
+    .flash.fire { animation: flash .28s ease-out; }
+    @keyframes flash { 0% { opacity: .88; } 100% { opacity: 0; } }
+
+    .camera-topbar {
+      position: absolute;
+      z-index: 2;
+      top: max(12px, env(safe-area-inset-top));
+      right: 13px;
+      left: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .camera-topbar button {
+      min-width: 70px;
+      min-height: 38px;
+      padding: 8px 12px;
+      border: 1px solid rgba(255,255,255,.18);
+      border-radius: 999px;
+      background: rgba(3,7,10,.67);
+      color: white;
+      backdrop-filter: blur(12px);
+      cursor: pointer;
+    }
+    .auto-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 38px;
+      padding: 8px 12px;
+      border: 1px solid rgba(94,224,170,.28);
+      border-radius: 999px;
+      background: rgba(3,7,10,.67);
+      color: #dff9ed;
+      font-size: 12px;
+      font-weight: 760;
+      backdrop-filter: blur(12px);
+    }
+    .auto-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 12px rgba(94,224,170,.8); }
+
+    .status-card {
+      position: absolute;
+      z-index: 2;
+      right: 15px;
+      bottom: 14px;
+      left: 15px;
+      padding: 13px 15px;
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: 16px;
+      background: rgba(3,7,10,.75);
+      text-align: center;
+      backdrop-filter: blur(13px);
+    }
+    .status-card strong { display: block; font-size: 14px; }
+    .status-card span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .status-progress { height: 3px; overflow: hidden; margin: 10px 0 -1px; border-radius: 99px; background: rgba(255,255,255,.1); }
+    .status-progress div { width: 0; height: 100%; border-radius: inherit; background: var(--green); transition: width .12s linear; }
+
+    .controls {
+      position: absolute;
+      z-index: 3;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      height: 152px;
+      display: grid;
+      grid-template-columns: 72px 1fr 72px;
+      align-items: center;
+      gap: 14px;
+      padding: 10px 18px max(12px, env(safe-area-inset-bottom));
+      border-top: 1px solid rgba(255,255,255,.1);
+      background: #071018;
+    }
+    .thumb-button, .done-button { min-height: 48px; border: 0; border-radius: 14px; cursor: pointer; }
+    .thumb-button { color: white; background: rgba(255,255,255,.08); font-size: 12px; font-weight: 740; }
+    .done-button { color: #061019; background: var(--green); font-size: 13px; font-weight: 820; }
+    .done-button:disabled { opacity: .38; }
+    .shutter {
+      width: 76px;
+      height: 76px;
+      display: grid;
+      place-items: center;
+      justify-self: center;
+      border: 4px solid white;
+      border-radius: 50%;
+      background: transparent;
+      cursor: pointer;
+    }
+    .shutter::after { content: ""; width: 58px; height: 58px; border-radius: 50%; background: white; transition: transform .12s ease; }
+    .shutter:active::after { transform: scale(.88); }
+    .shutter:disabled { opacity: .42; }
+
+    .tray {
+      position: absolute;
+      z-index: 5;
+      inset: 0;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      padding: max(20px, env(safe-area-inset-top)) 17px max(17px, env(safe-area-inset-bottom));
+      background: #07111a;
+    }
+    .tray-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .tray h2 { margin: 0; font-size: 25px; letter-spacing: -.035em; }
+    .tray-close { padding: 9px 12px; border: 1px solid rgba(255,255,255,.14); border-radius: 12px; background: rgba(255,255,255,.05); color: white; cursor: pointer; }
+    .page-grid { overflow: auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 12px; margin: 20px 0; }
+    .page { position: relative; overflow: hidden; aspect-ratio: .73; border: 1px solid rgba(255,255,255,.15); border-radius: 14px; background: white; }
+    .page img { width: 100%; height: 100%; object-fit: contain; }
+    .page label { position: absolute; top: 7px; left: 7px; padding: 5px 8px; border-radius: 8px; background: rgba(3,7,10,.78); font-size: 11px; }
+    .page button { position: absolute; right: 7px; bottom: 7px; width: 36px; height: 36px; border: 1px solid rgba(255,255,255,.2); border-radius: 10px; background: rgba(84,25,31,.92); color: white; font-size: 20px; cursor: pointer; }
+    .tray-actions { display: grid; grid-template-columns: 1fr 1.5fr; gap: 10px; }
+    .tray-actions button { min-height: 54px; border-radius: 15px; font-weight: 800; cursor: pointer; }
+    .tray-actions button:first-child { border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.05); color: white; }
+    .tray-actions button:last-child { border: 0; background: var(--green); color: #061019; }
+    .return-message { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 30px; background: #07111a; text-align: center; }
+  </style>
+</head>
+<body>
+  <section class="permission" id="permissionView">
+    <div class="permission-icon" aria-hidden="true">
+      <svg width="38" height="38" viewBox="0 0 24 24" fill="none"><path d="M4 8.5h3l1.5-2h7l1.5 2h3v10H4v-10Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><circle cx="12" cy="13.5" r="3.2" stroke="currentColor" stroke-width="1.7"/></svg>
+    </div>
+    <h1>Allow the camera to scan automatically.</h1>
+    <p>Paperwork AI watches for the whole document, checks light and sharpness, then takes the picture when it is steady.</p>
+    <ul class="permission-list">
+      <li><span>✓</span> Uses the rear camera</li>
+      <li><span>✓</span> Finds and straightens all four edges</li>
+      <li><span>✓</span> Captures only when the page is clear</li>
+    </ul>
+    <button class="action" id="startButton" type="button">Allow camera and start</button>
+    <button class="cancel" id="permissionCancel" type="button">Cancel</button>
+    <p class="permission-error" id="permissionError" hidden></p>
+  </section>
+
+  <main class="scanner" id="scannerView" hidden>
+    <div class="camera-stage" id="cameraStage">
+      <video id="cameraVideo" autoplay muted playsinline></video>
+      <canvas id="edgeOverlay"></canvas>
+      <div class="flash" id="flash"></div>
+      <div class="camera-topbar">
+        <button id="cancelButton" type="button">Cancel</button>
+        <div class="auto-badge"><span class="auto-dot"></span><span id="autoBadgeText">Auto scan</span></div>
+      </div>
+      <div class="status-card">
+        <strong id="statusText">Starting camera…</strong>
+        <span id="statusHint">Place one page on a contrasting surface</span>
+        <div class="status-progress"><div id="steadyProgress"></div></div>
+      </div>
+    </div>
+    <div class="controls">
+      <button class="thumb-button" id="pagesButton" type="button">0 pages</button>
+      <button class="shutter" id="shutterButton" type="button" aria-label="Take picture manually"></button>
+      <button class="done-button" id="doneButton" type="button" disabled>Done</button>
+    </div>
+  </main>
+
+  <section class="tray" id="trayView" hidden>
+    <div class="tray-header"><h2>Scanned pages</h2><button class="tray-close" id="trayClose" type="button">Back to camera</button></div>
+    <div class="page-grid" id="pageGrid"></div>
+    <div class="tray-actions"><button id="addPageButton" type="button">Add a page</button><button id="usePagesButton" type="button">Use these pages</button></div>
+  </section>
+
+  <div class="return-message" id="returnMessage" hidden><div><h2>Pages sent to Paperwork AI</h2><p>You can close this screen and return to the app.</p></div></div>
+  <canvas id="detectionCanvas" hidden></canvas>
+
+  <script>
+    'use strict';
+    const sessionToken = decodeURIComponent(location.hash.slice(1));
+    const state = {
+      stream: null,
+      pages: [],
+      detecting: false,
+      capturing: false,
+      timer: 0,
+      latestQuad: null,
+      previousQuad: null,
+      stableFrames: 0,
+      waitingForRemoval: false,
+      removalFrames: 0,
+      lastCaptureAt: 0,
+    };
+
+    const video = document.getElementById('cameraVideo');
+    const overlay = document.getElementById('edgeOverlay');
+    const overlayContext = overlay.getContext('2d');
+    const detectionCanvas = document.getElementById('detectionCanvas');
+    const detectionContext = detectionCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
+    const $ = (id) => document.getElementById(id);
+
+    video.playsInline = true;
+    video.muted = true;
+    $('startButton').addEventListener('click', startCamera);
+    $('permissionCancel').addEventListener('click', closeScanner);
+    $('cancelButton').addEventListener('click', closeScanner);
+    $('shutterButton').addEventListener('click', () => capturePage(false));
+    $('pagesButton').addEventListener('click', showTray);
+    $('doneButton').addEventListener('click', showTray);
+    $('trayClose').addEventListener('click', hideTray);
+    $('addPageButton').addEventListener('click', hideTray);
+    $('usePagesButton').addEventListener('click', returnPages);
+    window.addEventListener('resize', resizeOverlay);
+    window.addEventListener('orientationchange', () => setTimeout(resizeOverlay, 200));
+    window.addEventListener('pagehide', stopCamera);
+    $('autoBadgeText').textContent = 'Auto scan ready';
+
+    async function startCamera() {
+      const error = $('permissionError');
+      error.hidden = true;
+      $('startButton').disabled = true;
+      $('startButton').textContent = 'Opening camera…';
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        showPermissionError('This browser cannot open a live camera. Return to Paperwork AI and use the normal camera option.');
+        return;
+      }
+
+      try {
+        const baseVideo = { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } };
+        try {
+          state.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { ...baseVideo, facingMode: { exact: 'environment' } } });
+        } catch (firstError) {
+          if (firstError && (firstError.name === 'NotAllowedError' || firstError.name === 'SecurityError')) throw firstError;
+          state.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: baseVideo });
+        }
+        video.srcObject = state.stream;
+        await video.play();
+        await waitForVideo();
+        requestContinuousFocus();
+        $('permissionView').hidden = true;
+        $('scannerView').hidden = false;
+        resizeOverlay();
+        state.detecting = true;
+        detectionLoop();
+      } catch (cameraError) {
+        const denied = cameraError && (cameraError.name === 'NotAllowedError' || cameraError.name === 'SecurityError');
+        showPermissionError(denied
+          ? 'Camera access was not allowed. In Safari, open Page Settings → Camera → Allow, then try again.'
+          : 'The rear camera could not start. Close other apps using the camera and try again.');
+      }
+    }
+
+    function showPermissionError(message) {
+      $('permissionError').textContent = message;
+      $('permissionError').hidden = false;
+      $('startButton').disabled = false;
+      $('startButton').textContent = 'Try camera again';
+    }
+
+    function waitForVideo() {
+      if (video.videoWidth > 0 && video.readyState >= 2) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Camera timed out')), 10000);
+        video.addEventListener('loadeddata', () => { clearTimeout(timeout); resolve(); }, { once: true });
+      });
+    }
+
+    async function requestContinuousFocus() {
+      try {
+        const track = state.stream.getVideoTracks()[0];
+        const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+        if (Array.isArray(capabilities.focusMode) && capabilities.focusMode.includes('continuous')) {
+          await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+        }
+      } catch (_) {}
+    }
+
+    function detectionLoop() {
+      if (!state.detecting) return;
+      clearTimeout(state.timer);
+      state.timer = setTimeout(() => {
+        analyseFrame();
+        detectionLoop();
+      }, 125);
+    }
+
+    function analyseFrame() {
+      if (state.capturing || video.readyState < 2 || !video.videoWidth) return;
+      const width = 260;
+      const height = Math.max(1, Math.round(width * video.videoHeight / video.videoWidth));
+      detectionCanvas.width = width;
+      detectionCanvas.height = height;
+      detectionContext.drawImage(video, 0, 0, width, height);
+      let result = null;
+      try { result = detectDocument(detectionCanvas); }
+      catch (error) { console.error(error); }
+
+      if (!result || !result.quad) {
+        state.latestQuad = null;
+        state.previousQuad = null;
+        state.stableFrames = 0;
+        if (state.waitingForRemoval) {
+          state.removalFrames += 1;
+          if (state.removalFrames >= 4) {
+            state.waitingForRemoval = false;
+            state.removalFrames = 0;
+          }
+        }
+        drawGuide();
+        setStatus(state.waitingForRemoval ? 'Page captured' : 'Find all four edges', state.waitingForRemoval ? 'Move this page away before the next one' : 'Place the full page on a contrasting surface', 0);
+        return;
+      }
+
+      state.latestQuad = result.quad;
+      drawDetectedQuad(result.quad, result.inside && result.brightnessOk && result.sharpEnough);
+      if (state.waitingForRemoval) {
+        state.removalFrames = 0;
+        state.stableFrames = 0;
+        setStatus('Page captured', 'Move this page away before the next one', 0);
+        return;
+      }
+      if (!result.inside) {
+        resetStability(result.quad);
+        setStatus('Move the phone back', 'Keep every corner inside the green guide', 0);
+        return;
+      }
+      if (!result.brightnessOk) {
+        resetStability(result.quad);
+        setStatus(result.brightness < 43 ? 'More light needed' : 'Reduce glare', 'Use even light without a bright reflection', 0);
+        return;
+      }
+      if (!result.sharpEnough) {
+        resetStability(result.quad);
+        setStatus('Hold still for focus', 'Keep the phone steady and parallel to the page', 0);
+        return;
+      }
+
+      const movement = state.previousQuad ? averageCornerMovement(state.previousQuad, result.quad) : Infinity;
+      state.stableFrames = movement < 0.018 ? state.stableFrames + 1 : 0;
+      state.previousQuad = result.quad.map((point) => ({ ...point }));
+      const progress = Math.min(100, state.stableFrames / 7 * 100);
+      setStatus(state.stableFrames >= 3 ? 'Almost there…' : 'Hold steady', 'Automatic capture when the page is sharp', progress);
+      if (state.stableFrames >= 7 && Date.now() - state.lastCaptureAt > 1400) capturePage(true);
+    }
+
+    function detectDocument(canvas) {
+      const width = canvas.width;
+      const height = canvas.height;
+      const pixels = detectionContext.getImageData(0, 0, width, height).data;
+      const gray = new Uint8Array(width * height);
+      const histogram = new Uint32Array(256);
+      let borderTotal = 0;
+      let borderCount = 0;
+      let centreTotal = 0;
+      let centreCount = 0;
+
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const pixelIndex = y * width + x;
+          const dataIndex = pixelIndex * 4;
+          const value = Math.round(pixels[dataIndex] * .299 + pixels[dataIndex + 1] * .587 + pixels[dataIndex + 2] * .114);
+          gray[pixelIndex] = value;
+          histogram[value] += 1;
+          if (x < 5 || x >= width - 5 || y < 5 || y >= height - 5) {
+            borderTotal += value;
+            borderCount += 1;
+          }
+          if (x > width * .25 && x < width * .75 && y > height * .25 && y < height * .75) {
+            centreTotal += value;
+            centreCount += 1;
+          }
+        }
+      }
+
+      const borderBrightness = borderTotal / Math.max(1, borderCount);
+      const centreBrightness = centreTotal / Math.max(1, centreCount);
+      const threshold = Math.max(70, Math.min(242, otsuThreshold(histogram, gray.length)));
+      if (centreBrightness - borderBrightness < 12 && centreBrightness < 205) return null;
+
+      const mask = new Uint8Array(gray.length);
+      for (let index = 0; index < gray.length; index += 1) mask[index] = gray[index] > threshold ? 1 : 0;
+      const component = largestBrightComponent(mask, width, height);
+      if (!component || component.area < gray.length * .16 || component.area > gray.length * .97) return null;
+
+      const quad = orderCorners(component.corners.map((point) => ({ x: point.x / width, y: point.y / height })));
+      if (polygonArea(quad) < .14) return null;
+      const margin = .035;
+      const inside = quad.every((point) => point.x > margin && point.x < 1 - margin && point.y > margin && point.y < 1 - margin);
+      const sharpness = laplacianVariance(gray, width, height);
+      return {
+        quad,
+        inside,
+        brightness: centreBrightness,
+        brightnessOk: centreBrightness >= 92 && centreBrightness <= 250,
+        sharpness,
+        sharpEnough: sharpness >= 46,
+      };
+    }
+
+    function otsuThreshold(histogram, total) {
+      let weightedTotal = 0;
+      for (let value = 0; value < 256; value += 1) weightedTotal += value * histogram[value];
+      let backgroundWeight = 0;
+      let backgroundSum = 0;
+      let bestThreshold = 128;
+      let bestVariance = -1;
+      for (let value = 0; value < 256; value += 1) {
+        backgroundWeight += histogram[value];
+        if (!backgroundWeight) continue;
+        const foregroundWeight = total - backgroundWeight;
+        if (!foregroundWeight) break;
+        backgroundSum += value * histogram[value];
+        const backgroundMean = backgroundSum / backgroundWeight;
+        const foregroundMean = (weightedTotal - backgroundSum) / foregroundWeight;
+        const variance = backgroundWeight * foregroundWeight * Math.pow(backgroundMean - foregroundMean, 2);
+        if (variance > bestVariance) {
+          bestVariance = variance;
+          bestThreshold = value;
+        }
+      }
+      return bestThreshold;
+    }
+
+    function largestBrightComponent(mask, width, height) {
+      const visited = new Uint8Array(mask.length);
+      const queue = new Int32Array(mask.length);
+      let largest = null;
+      for (let start = 0; start < mask.length; start += 1) {
+        if (!mask[start] || visited[start]) continue;
+        let head = 0;
+        let tail = 0;
+        let area = 0;
+        let topLeft = { x: width, y: height, score: Infinity };
+        let topRight = { x: 0, y: height, score: -Infinity };
+        let bottomRight = { x: 0, y: 0, score: -Infinity };
+        let bottomLeft = { x: width, y: 0, score: Infinity };
+        queue[tail++] = start;
+        visited[start] = 1;
+
+        while (head < tail) {
+          const index = queue[head++];
+          const x = index % width;
+          const y = Math.floor(index / width);
+          area += 1;
+          const sum = x + y;
+          const difference = x - y;
+          if (sum < topLeft.score) topLeft = { x, y, score: sum };
+          if (difference > topRight.score) topRight = { x, y, score: difference };
+          if (sum > bottomRight.score) bottomRight = { x, y, score: sum };
+          if (difference < bottomLeft.score) bottomLeft = { x, y, score: difference };
+
+          const neighbours = [index - 1, index + 1, index - width, index + width];
+          for (const neighbour of neighbours) {
+            if (neighbour < 0 || neighbour >= mask.length || visited[neighbour] || !mask[neighbour]) continue;
+            if ((neighbour === index - 1 || neighbour === index + 1) && Math.floor(neighbour / width) !== y) continue;
+            visited[neighbour] = 1;
+            queue[tail++] = neighbour;
+          }
+        }
+
+        if (!largest || area > largest.area) {
+          largest = { area, corners: [topLeft, topRight, bottomRight, bottomLeft] };
+        }
+      }
+      return largest;
+    }
+
+    function laplacianVariance(gray, width, height) {
+      let sum = 0;
+      let squared = 0;
+      let count = 0;
+      const xStart = Math.floor(width * .15);
+      const xEnd = Math.ceil(width * .85);
+      const yStart = Math.floor(height * .15);
+      const yEnd = Math.ceil(height * .85);
+      for (let y = Math.max(1, yStart); y < Math.min(height - 1, yEnd); y += 1) {
+        for (let x = Math.max(1, xStart); x < Math.min(width - 1, xEnd); x += 1) {
+          const index = y * width + x;
+          const value = gray[index] * 4 - gray[index - 1] - gray[index + 1] - gray[index - width] - gray[index + width];
+          sum += value;
+          squared += value * value;
+          count += 1;
+        }
+      }
+      if (!count) return 0;
+      const mean = sum / count;
+      return squared / count - mean * mean;
+    }
+
+    function polygonArea(points) {
+      let total = 0;
+      points.forEach((point, index) => {
+        const next = points[(index + 1) % points.length];
+        total += point.x * next.y - next.x * point.y;
+      });
+      return Math.abs(total) / 2;
+    }
+
+    function orderCorners(points) {
+      const bySum = [...points].sort((a, b) => (a.x + a.y) - (b.x + b.y));
+      const byDifference = [...points].sort((a, b) => (a.x - a.y) - (b.x - b.y));
+      return [bySum[0], byDifference[3], bySum[3], byDifference[0]];
+    }
+
+    function averageCornerMovement(previous, current) {
+      return current.reduce((total, point, index) => total + Math.hypot(point.x - previous[index].x, point.y - previous[index].y), 0) / 4;
+    }
+
+    function resetStability(quad) {
+      state.stableFrames = 0;
+      state.previousQuad = quad.map((point) => ({ ...point }));
+    }
+
+    function resizeOverlay() {
+      const stage = $('cameraStage');
+      const ratio = window.devicePixelRatio || 1;
+      overlay.width = Math.round(stage.clientWidth * ratio);
+      overlay.height = Math.round(stage.clientHeight * ratio);
+      overlay.style.width = stage.clientWidth + 'px';
+      overlay.style.height = stage.clientHeight + 'px';
+      overlayContext.setTransform(ratio, 0, 0, ratio, 0, 0);
+    }
+
+    function videoRect() {
+      const stage = $('cameraStage');
+      const videoRatio = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : .75;
+      const stageRatio = stage.clientWidth / stage.clientHeight;
+      let width;
+      let height;
+      if (videoRatio > stageRatio) { width = stage.clientWidth; height = width / videoRatio; }
+      else { height = stage.clientHeight; width = height * videoRatio; }
+      return { x: (stage.clientWidth - width) / 2, y: (stage.clientHeight - height) / 2, width, height };
+    }
+
+    function drawGuide() {
+      const stage = $('cameraStage');
+      overlayContext.clearRect(0, 0, stage.clientWidth, stage.clientHeight);
+      const rect = videoRect();
+      const insetX = rect.width * .09;
+      const insetY = rect.height * .09;
+      const x = rect.x + insetX;
+      const y = rect.y + insetY;
+      const width = rect.width - insetX * 2;
+      const height = rect.height - insetY * 2;
+      overlayContext.strokeStyle = 'rgba(255,255,255,.45)';
+      overlayContext.lineWidth = 2;
+      overlayContext.setLineDash([9, 8]);
+      overlayContext.strokeRect(x, y, width, height);
+      overlayContext.setLineDash([]);
+    }
+
+    function drawDetectedQuad(quad, good) {
+      const stage = $('cameraStage');
+      overlayContext.clearRect(0, 0, stage.clientWidth, stage.clientHeight);
+      const rect = videoRect();
+      overlayContext.beginPath();
+      quad.forEach((point, index) => {
+        const x = rect.x + point.x * rect.width;
+        const y = rect.y + point.y * rect.height;
+        if (index === 0) overlayContext.moveTo(x, y); else overlayContext.lineTo(x, y);
+      });
+      overlayContext.closePath();
+      overlayContext.fillStyle = good ? 'rgba(94,224,170,.08)' : 'rgba(255,211,108,.06)';
+      overlayContext.strokeStyle = good ? '#5ee0aa' : '#ffd36c';
+      overlayContext.lineWidth = 4;
+      overlayContext.shadowColor = good ? 'rgba(94,224,170,.65)' : 'rgba(255,211,108,.5)';
+      overlayContext.shadowBlur = 10;
+      overlayContext.fill();
+      overlayContext.stroke();
+      overlayContext.shadowBlur = 0;
+    }
+
+    function setStatus(title, hint, progress) {
+      $('statusText').textContent = title;
+      $('statusHint').textContent = hint;
+      $('steadyProgress').style.width = Math.max(0, Math.min(100, progress || 0)) + '%';
+    }
+
+    async function capturePage(automatic) {
+      if (state.capturing || video.readyState < 2) return;
+      state.capturing = true;
+      $('shutterButton').disabled = true;
+      setStatus(automatic ? 'Capturing automatically…' : 'Taking picture…', 'Keep the phone still', 100);
+      try {
+        const page = await createCroppedPage(state.latestQuad);
+        state.pages.push(page);
+        state.lastCaptureAt = Date.now();
+        state.waitingForRemoval = true;
+        state.removalFrames = 0;
+        state.stableFrames = 0;
+        state.previousQuad = null;
+        renderPages();
+        $('flash').classList.remove('fire');
+        void $('flash').offsetWidth;
+        $('flash').classList.add('fire');
+        if (navigator.vibrate) navigator.vibrate(35);
+        setStatus('Page ' + state.pages.length + ' captured', 'Move this page away before the next one', 0);
+      } catch (error) {
+        console.error(error);
+        setStatus('Picture failed', 'Hold steady and use the shutter button again', 0);
+      } finally {
+        state.capturing = false;
+        $('shutterButton').disabled = false;
+      }
+    }
+
+    async function createCroppedPage(quad) {
+      const sourceScale = Math.min(1, 2200 / Math.max(video.videoWidth, video.videoHeight));
+      const sourceCanvas = document.createElement('canvas');
+      sourceCanvas.width = Math.max(1, Math.round(video.videoWidth * sourceScale));
+      sourceCanvas.height = Math.max(1, Math.round(video.videoHeight * sourceScale));
+      sourceCanvas.getContext('2d', { alpha: false }).drawImage(video, 0, 0, sourceCanvas.width, sourceCanvas.height);
+
+      let outputCanvas = sourceCanvas;
+      if (quad) {
+        try { outputCanvas = perspectiveCrop(sourceCanvas, quad); }
+        catch (error) { console.error('Perspective crop failed', error); }
+      }
+      if (outputCanvas === sourceCanvas && !quad) outputCanvas = centreCrop(sourceCanvas);
+      const resized = resizeCanvas(outputCanvas, 2000);
+      return { dataUrl: resized.toDataURL('image/jpeg', .88), width: resized.width, height: resized.height };
+    }
+
+    function perspectiveCrop(sourceCanvas, quad) {
+      const points = quad.map((point) => ({ x: point.x * sourceCanvas.width, y: point.y * sourceCanvas.height }));
+      const topWidth = distance(points[0], points[1]);
+      const bottomWidth = distance(points[3], points[2]);
+      const leftHeight = distance(points[0], points[3]);
+      const rightHeight = distance(points[1], points[2]);
+      const rawWidth = Math.max(1, Math.round(Math.max(topWidth, bottomWidth)));
+      const rawHeight = Math.max(1, Math.round(Math.max(leftHeight, rightHeight)));
+      const scale = Math.min(1, 1800 / Math.max(rawWidth, rawHeight));
+      const width = Math.max(1, Math.round(rawWidth * scale));
+      const height = Math.max(1, Math.round(rawHeight * scale));
+      const output = document.createElement('canvas');
+      output.width = width;
+      output.height = height;
+      const sourcePixels = sourceCanvas.getContext('2d').getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+      const outputContext = output.getContext('2d', { alpha: false });
+      const outputPixels = outputContext.createImageData(width, height);
+      const homography = solveHomography(
+        [{ x: 0, y: 0 }, { x: width - 1, y: 0 }, { x: width - 1, y: height - 1 }, { x: 0, y: height - 1 }],
+        points,
+      );
+      warpPixels(sourcePixels, outputPixels, homography);
+      outputContext.putImageData(outputPixels, 0, 0);
+      return output;
+    }
+
+    function solveHomography(from, to) {
+      const matrix = [];
+      for (let index = 0; index < 4; index += 1) {
+        const u = from[index].x;
+        const v = from[index].y;
+        const x = to[index].x;
+        const y = to[index].y;
+        matrix.push([u, v, 1, 0, 0, 0, -u * x, -v * x, x]);
+        matrix.push([0, 0, 0, u, v, 1, -u * y, -v * y, y]);
+      }
+      for (let column = 0; column < 8; column += 1) {
+        let pivot = column;
+        for (let row = column + 1; row < 8; row += 1) {
+          if (Math.abs(matrix[row][column]) > Math.abs(matrix[pivot][column])) pivot = row;
+        }
+        [matrix[column], matrix[pivot]] = [matrix[pivot], matrix[column]];
+        const divisor = matrix[column][column];
+        if (Math.abs(divisor) < 1e-9) throw new Error('Document corners could not be straightened');
+        for (let cell = column; cell < 9; cell += 1) matrix[column][cell] /= divisor;
+        for (let row = 0; row < 8; row += 1) {
+          if (row === column) continue;
+          const factor = matrix[row][column];
+          for (let cell = column; cell < 9; cell += 1) matrix[row][cell] -= factor * matrix[column][cell];
+        }
+      }
+      return matrix.map((row) => row[8]);
+    }
+
+    function warpPixels(source, destination, homography) {
+      const sourceData = source.data;
+      const output = destination.data;
+      const sourceWidth = source.width;
+      const sourceHeight = source.height;
+      const outputWidth = destination.width;
+      const outputHeight = destination.height;
+      for (let y = 0; y < outputHeight; y += 1) {
+        for (let x = 0; x < outputWidth; x += 1) {
+          const denominator = homography[6] * x + homography[7] * y + 1;
+          const sourceX = Math.max(0, Math.min(sourceWidth - 1, (homography[0] * x + homography[1] * y + homography[2]) / denominator));
+          const sourceY = Math.max(0, Math.min(sourceHeight - 1, (homography[3] * x + homography[4] * y + homography[5]) / denominator));
+          const left = Math.floor(sourceX);
+          const top = Math.floor(sourceY);
+          const right = Math.min(sourceWidth - 1, left + 1);
+          const bottom = Math.min(sourceHeight - 1, top + 1);
+          const xWeight = sourceX - left;
+          const yWeight = sourceY - top;
+          const outputIndex = (y * outputWidth + x) * 4;
+          const topLeft = (top * sourceWidth + left) * 4;
+          const topRight = (top * sourceWidth + right) * 4;
+          const bottomLeft = (bottom * sourceWidth + left) * 4;
+          const bottomRight = (bottom * sourceWidth + right) * 4;
+          for (let channel = 0; channel < 3; channel += 1) {
+            const upper = sourceData[topLeft + channel] * (1 - xWeight) + sourceData[topRight + channel] * xWeight;
+            const lower = sourceData[bottomLeft + channel] * (1 - xWeight) + sourceData[bottomRight + channel] * xWeight;
+            output[outputIndex + channel] = upper * (1 - yWeight) + lower * yWeight;
+          }
+          output[outputIndex + 3] = 255;
+        }
+      }
+    }
+
+    function centreCrop(source) {
+      const insetX = Math.round(source.width * .07);
+      const insetY = Math.round(source.height * .07);
+      const output = document.createElement('canvas');
+      output.width = source.width - insetX * 2;
+      output.height = source.height - insetY * 2;
+      output.getContext('2d', { alpha: false }).drawImage(source, insetX, insetY, output.width, output.height, 0, 0, output.width, output.height);
+      return output;
+    }
+
+    function resizeCanvas(source, maxDimension) {
+      const scale = Math.min(1, maxDimension / Math.max(source.width, source.height));
+      if (scale === 1) return source;
+      const output = document.createElement('canvas');
+      output.width = Math.max(1, Math.round(source.width * scale));
+      output.height = Math.max(1, Math.round(source.height * scale));
+      output.getContext('2d', { alpha: false }).drawImage(source, 0, 0, output.width, output.height);
+      return output;
+    }
+
+    function distance(first, second) {
+      return Math.hypot(second.x - first.x, second.y - first.y);
+    }
+
+    function renderPages() {
+      const count = state.pages.length;
+      $('pagesButton').textContent = count + (count === 1 ? ' page' : ' pages');
+      $('doneButton').disabled = count === 0;
+      $('doneButton').textContent = count ? 'Done · ' + count : 'Done';
+      $('usePagesButton').textContent = count ? 'Use ' + count + (count === 1 ? ' page' : ' pages') : 'Use these pages';
+      const grid = $('pageGrid');
+      grid.replaceChildren();
+      state.pages.forEach((page, index) => {
+        const card = document.createElement('article');
+        card.className = 'page';
+        const image = document.createElement('img');
+        image.src = page.dataUrl;
+        image.alt = 'Scanned page ' + (index + 1);
+        const label = document.createElement('label');
+        label.textContent = 'Page ' + (index + 1);
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.setAttribute('aria-label', 'Remove page ' + (index + 1));
+        remove.textContent = '×';
+        remove.addEventListener('click', () => { state.pages.splice(index, 1); renderPages(); });
+        card.append(image, label, remove);
+        grid.append(card);
+      });
+    }
+
+    function showTray() {
+      if (!state.pages.length) return;
+      $('scannerView').hidden = true;
+      $('trayView').hidden = false;
+    }
+
+    function hideTray() {
+      $('trayView').hidden = true;
+      $('scannerView').hidden = false;
+      resizeOverlay();
+    }
+
+    function returnPages() {
+      if (!state.pages.length) return;
+      stopCamera();
+      const message = { type: 'paperwork-ai-pages', token: sessionToken, pages: state.pages };
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage(message, '*');
+        $('trayView').hidden = true;
+        $('scannerView').hidden = true;
+        $('returnMessage').hidden = false;
+        setTimeout(() => window.close(), 180);
+      } else {
+        $('trayView').hidden = true;
+        $('returnMessage').hidden = false;
+      }
+    }
+
+    function stopCamera() {
+      state.detecting = false;
+      clearTimeout(state.timer);
+      if (state.stream) state.stream.getTracks().forEach((track) => track.stop());
+      state.stream = null;
+      video.srcObject = null;
+    }
+
+    function closeScanner() {
+      stopCamera();
+      window.close();
+    }
+
+    function wait(milliseconds) {
+      return new Promise((resolve) => setTimeout(resolve, milliseconds));
+    }
+
+    window.paperworkCameraGeometry = Object.freeze({ orderCorners, averageCornerMovement, distance, polygonArea, solveHomography });
+  </script>
+</body>
+</html>
