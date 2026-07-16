@@ -244,6 +244,11 @@
       waitingForRemoval: false,
       removalFrames: 0,
       lastCaptureAt: 0,
+      precisionWorker: null,
+      precisionReady: false,
+      precisionBusy: false,
+      precisionFailed: false,
+      precisionMisses: 0,
     };
 
     const video = document.getElementById('cameraVideo');
@@ -267,7 +272,64 @@
     window.addEventListener('resize', resizeOverlay);
     window.addEventListener('orientationchange', () => setTimeout(resizeOverlay, 200));
     window.addEventListener('pagehide', stopCamera);
-    $('autoBadgeText').textContent = 'Auto scan ready';
+    $('autoBadgeText').textContent = 'Precision starting…';
+    initialisePrecisionDetector();
+
+    function initialisePrecisionDetector() {
+      if (!window.Worker) {
+        state.precisionFailed = true;
+        $('autoBadgeText').textContent = 'Auto scan ready';
+        return;
+      }
+      try {
+        state.precisionWorker = new Worker('./detector-worker.js');
+        state.precisionWorker.onmessage = (event) => {
+          const message = event.data || {};
+          if (message.type === 'ready') {
+            state.precisionReady = true;
+            state.precisionFailed = false;
+            $('autoBadgeText').textContent = 'Precision auto scan';
+            return;
+          }
+          if (message.type === 'result') {
+            state.precisionBusy = false;
+            const result = message.result;
+            if (result && result.quad) {
+              state.precisionMisses = 0;
+              handleDetectionResult(result);
+              return;
+            }
+            state.precisionMisses += 1;
+            if (state.precisionMisses >= 3) {
+              state.precisionMisses = 0;
+              try { handleDetectionResult(detectDocument(detectionCanvas)); }
+              catch (_) { handleDetectionResult(null); }
+            } else {
+              handleDetectionResult(null);
+            }
+            return;
+          }
+          if (message.type === 'frame-error') {
+            state.precisionBusy = false;
+            console.warn(message.message || 'Precision frame detection failed');
+          }
+          if (message.type === 'error') disablePrecisionDetector(message.message);
+        };
+        state.precisionWorker.onerror = (event) => disablePrecisionDetector(event.message);
+      } catch (error) {
+        disablePrecisionDetector(error.message);
+      }
+    }
+
+    function disablePrecisionDetector(message) {
+      console.warn(message || 'Precision detector unavailable; using fast detector');
+      state.precisionReady = false;
+      state.precisionBusy = false;
+      state.precisionFailed = true;
+      if (state.precisionWorker) state.precisionWorker.terminate();
+      state.precisionWorker = null;
+      $('autoBadgeText').textContent = 'Auto scan ready';
+    }
 
     async function startCamera() {
       const error = $('permissionError');
@@ -345,10 +407,21 @@
       detectionCanvas.width = width;
       detectionCanvas.height = height;
       detectionContext.drawImage(video, 0, 0, width, height);
+      if (state.precisionReady && state.precisionWorker) {
+        if (state.precisionBusy) return;
+        const frame = detectionContext.getImageData(0, 0, width, height);
+        state.precisionBusy = true;
+        state.precisionWorker.postMessage({ type: 'frame', width, height, buffer: frame.data.buffer }, [frame.data.buffer]);
+        return;
+      }
       let result = null;
       try { result = detectDocument(detectionCanvas); }
       catch (error) { console.error(error); }
 
+      handleDetectionResult(result);
+    }
+
+    function handleDetectionResult(result) {
       if (!result || !result.quad) {
         state.latestQuad = null;
         state.previousQuad = null;
@@ -846,6 +919,7 @@
       if (state.stream) state.stream.getTracks().forEach((track) => track.stop());
       state.stream = null;
       video.srcObject = null;
+      state.precisionBusy = false;
     }
 
     function closeScanner() {
