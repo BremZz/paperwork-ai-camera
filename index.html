@@ -194,11 +194,11 @@
       <svg width="38" height="38" viewBox="0 0 24 24" fill="none"><path d="M4 8.5h3l1.5-2h7l1.5 2h3v10H4v-10Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><circle cx="12" cy="13.5" r="3.2" stroke="currentColor" stroke-width="1.7"/></svg>
     </div>
     <h1>Allow the camera to scan automatically.</h1>
-    <p>Paperwork AI watches for the whole document, checks light and sharpness, then takes the picture when it is steady.</p>
+    <p>Paperwork AI watches for the whole document, smooths uneven edges, checks light and focus, then captures when it has enough confidence.</p>
     <ul class="permission-list">
       <li><span>✓</span> Uses the rear camera</li>
-      <li><span>✓</span> Finds and straightens all four edges</li>
-      <li><span>✓</span> Captures only when the page is clear</li>
+      <li><span>✓</span> Finds and straightens flexible or creased edges</li>
+      <li><span>✓</span> Allows brief movement without losing the page</li>
     </ul>
     <button class="action" id="startButton" type="button">Allow camera and start</button>
     <button class="cancel" id="permissionCancel" type="button">Cancel</button>
@@ -248,6 +248,14 @@
   <script>
     'use strict';
     const sessionToken = decodeURIComponent(location.hash.slice(1));
+    const DETECTION_SETTINGS = Object.freeze({
+      smoothingWeight: .34,
+      captureThreshold: 100,
+      lockOnConfidence: 26,
+      lockOffConfidence: 10,
+      missingFrameGrace: 5,
+      qualityFrameGrace: 3,
+    });
     const state = {
       stream: null,
       pages: [],
@@ -256,7 +264,12 @@
       timer: 0,
       latestQuad: null,
       previousQuad: null,
-      stableFrames: 0,
+      smoothedQuad: null,
+      captureConfidence: 0,
+      missingFrames: 0,
+      qualityMisses: 0,
+      goodFrames: 0,
+      detectionLocked: false,
       waitingForRemoval: false,
       removalFrames: 0,
       lastCaptureAt: 0,
@@ -301,7 +314,7 @@
     function initialisePrecisionDetector() {
       if (!window.Worker) {
         state.precisionFailed = true;
-        $('autoBadgeText').textContent = 'Auto scan ready';
+        $('autoBadgeText').textContent = 'Flexible auto scan';
         return;
       }
       try {
@@ -311,7 +324,7 @@
           if (message.type === 'ready') {
             state.precisionReady = true;
             state.precisionFailed = false;
-            $('autoBadgeText').textContent = 'Precision auto scan';
+            $('autoBadgeText').textContent = 'Flexible auto scan';
             return;
           }
           if (message.type === 'result') {
@@ -323,13 +336,12 @@
               return;
             }
             state.precisionMisses += 1;
-            if (state.precisionMisses >= 3) {
-              state.precisionMisses = 0;
-              try { handleDetectionResult(detectDocument(detectionCanvas)); }
-              catch (_) { handleDetectionResult(null); }
-            } else {
-              handleDetectionResult(null);
+            try {
+              const fallbackResult = detectDocument(detectionCanvas);
+              if (fallbackResult) state.precisionMisses = 0;
+              handleDetectionResult(fallbackResult);
             }
+            catch (_) { handleDetectionResult(null); }
             return;
           }
           if (message.type === 'frame-error') {
@@ -351,7 +363,7 @@
       state.precisionFailed = true;
       if (state.precisionWorker) state.precisionWorker.terminate();
       state.precisionWorker = null;
-      $('autoBadgeText').textContent = 'Auto scan ready';
+      $('autoBadgeText').textContent = 'Flexible auto scan';
     }
 
     async function startCamera() {
@@ -446,51 +458,108 @@
 
     function handleDetectionResult(result) {
       if (!result || !result.quad) {
-        state.latestQuad = null;
-        state.previousQuad = null;
-        state.stableFrames = 0;
         if (state.waitingForRemoval) {
           state.removalFrames += 1;
           if (state.removalFrames >= 4) {
             state.waitingForRemoval = false;
             state.removalFrames = 0;
+            clearDetectionTracking();
           }
+          drawGuide();
+          setStatus('Page captured', 'Move this page away before the next one', 0);
+          return;
         }
+
+        state.missingFrames += 1;
+        state.captureConfidence = nextCaptureConfidence(state.captureConfidence, { detected: false });
+        state.goodFrames = Math.max(0, state.goodFrames - 1);
+        state.detectionLocked = nextDetectionLock(
+          state.detectionLocked,
+          state.captureConfidence,
+          state.missingFrames,
+          state.qualityMisses,
+          false,
+        );
+
+        if (state.smoothedQuad && state.missingFrames <= DETECTION_SETTINGS.missingFrameGrace) {
+          state.latestQuad = cloneQuad(state.smoothedQuad);
+          drawDetectedQuad(state.smoothedQuad, state.detectionLocked);
+          setStatus(
+            state.detectionLocked ? 'Keep holding…' : 'Edges adjusting…',
+            'The scanner is keeping the page while a corner briefly disappears',
+            state.captureConfidence,
+          );
+          return;
+        }
+
+        if (state.missingFrames > DETECTION_SETTINGS.missingFrameGrace + 3) clearDetectionTracking();
         drawGuide();
-        setStatus(state.waitingForRemoval ? 'Page captured' : 'Find all four edges', state.waitingForRemoval ? 'Move this page away before the next one' : 'Place the full page on a contrasting surface', 0);
+        setStatus('Find the page', 'Keep the whole sheet visible; imperfect edges are okay', state.captureConfidence);
         return;
       }
 
-      state.latestQuad = result.quad;
-      drawDetectedQuad(result.quad, result.inside && result.brightnessOk && result.sharpEnough);
+      const rawQuad = result.quad.map((point) => ({ x: Number(point.x), y: Number(point.y) }));
+      const movement = state.previousQuad ? averageCornerMovement(state.previousQuad, rawQuad) : Infinity;
+      state.previousQuad = cloneQuad(rawQuad);
+      state.smoothedQuad = smoothDocumentQuad(
+        state.smoothedQuad,
+        rawQuad,
+        state.detectionLocked ? DETECTION_SETTINGS.smoothingWeight : .5,
+      );
+      state.latestQuad = cloneQuad(state.smoothedQuad);
+      state.missingFrames = 0;
+
       if (state.waitingForRemoval) {
         state.removalFrames = 0;
-        state.stableFrames = 0;
+        clearDetectionTracking(false);
         setStatus('Page captured', 'Move this page away before the next one', 0);
         return;
       }
-      if (!result.inside) {
-        resetStability(result.quad);
-        setStatus('Move the phone back', 'Keep every corner inside the green guide', 0);
-        return;
-      }
-      if (!result.brightnessOk) {
-        resetStability(result.quad);
-        setStatus(result.brightness < 43 ? 'More light needed' : 'Reduce glare', 'Use even light without a bright reflection', 0);
-        return;
-      }
-      if (!result.sharpEnough) {
-        resetStability(result.quad);
-        setStatus('Hold still for focus', 'Keep the phone steady and parallel to the page', 0);
-        return;
+
+      const framingOk = Boolean(result.inside) || hasSafeFraming(rawQuad, .012);
+      const brightnessOk = Boolean(result.brightnessOk);
+      const sharpEnough = Boolean(result.sharpEnough);
+      const qualityOk = framingOk && brightnessOk && sharpEnough;
+      if (qualityOk) {
+        state.qualityMisses = 0;
+        state.goodFrames += 1;
+      } else {
+        state.qualityMisses += 1;
+        state.goodFrames = Math.max(0, state.goodFrames - 2);
       }
 
-      const movement = state.previousQuad ? averageCornerMovement(state.previousQuad, result.quad) : Infinity;
-      state.stableFrames = movement < 0.018 ? state.stableFrames + 1 : 0;
-      state.previousQuad = result.quad.map((point) => ({ ...point }));
-      const progress = Math.min(100, state.stableFrames / 7 * 100);
-      setStatus(state.stableFrames >= 3 ? 'Almost there…' : 'Hold steady', 'Automatic capture when the page is sharp', progress);
-      if (state.stableFrames >= 7 && Date.now() - state.lastCaptureAt > 1400) capturePage(true);
+      state.captureConfidence = nextCaptureConfidence(state.captureConfidence, {
+        detected: true,
+        framingOk,
+        qualityOk,
+        movement,
+      });
+      state.detectionLocked = nextDetectionLock(
+        state.detectionLocked,
+        state.captureConfidence,
+        state.missingFrames,
+        state.qualityMisses,
+        qualityOk,
+      );
+      drawDetectedQuad(state.smoothedQuad, state.detectionLocked);
+
+      const issueIsEstablished = state.qualityMisses > DETECTION_SETTINGS.qualityFrameGrace;
+      if (issueIsEstablished && !framingOk) {
+        setStatus('Move slightly further back', 'Keep each corner just inside the camera view', state.captureConfidence);
+      } else if (issueIsEstablished && !brightnessOk) {
+        setStatus(result.brightness < 36 ? 'More light needed' : 'Reduce glare', 'Even light is better than a bright reflection', state.captureConfidence);
+      } else if (issueIsEstablished && !sharpEnough) {
+        setStatus('Let the camera focus', 'Hold roughly steady—the page does not need to be perfectly flat', state.captureConfidence);
+      } else {
+        const nearlyReady = state.captureConfidence >= 55;
+        setStatus(nearlyReady ? 'Almost there…' : 'Hold roughly steady', 'Brief edge movement is okay', state.captureConfidence);
+      }
+
+      if (
+        state.captureConfidence >= DETECTION_SETTINGS.captureThreshold
+        && state.goodFrames >= 4
+        && Date.now() - state.lastCaptureAt > 1400
+      ) capturePage(true);
     }
 
     function detectDocument(canvas) {
@@ -525,25 +594,25 @@
       const borderBrightness = borderTotal / Math.max(1, borderCount);
       const centreBrightness = centreTotal / Math.max(1, centreCount);
       const threshold = Math.max(70, Math.min(242, otsuThreshold(histogram, gray.length)));
-      if (centreBrightness - borderBrightness < 12 && centreBrightness < 205) return null;
+      if (centreBrightness - borderBrightness < 8 && centreBrightness < 195) return null;
 
       const mask = new Uint8Array(gray.length);
       for (let index = 0; index < gray.length; index += 1) mask[index] = gray[index] > threshold ? 1 : 0;
       const component = largestBrightComponent(mask, width, height);
-      if (!component || component.area < gray.length * .16 || component.area > gray.length * .97) return null;
+      if (!component || component.area < gray.length * .13 || component.area > gray.length * .98) return null;
 
       const quad = orderCorners(component.corners.map((point) => ({ x: point.x / width, y: point.y / height })));
       if (polygonArea(quad) < .14) return null;
-      const margin = .035;
+      const margin = .02;
       const inside = quad.every((point) => point.x > margin && point.x < 1 - margin && point.y > margin && point.y < 1 - margin);
       const sharpness = laplacianVariance(gray, width, height);
       return {
         quad,
         inside,
         brightness: centreBrightness,
-        brightnessOk: centreBrightness >= 92 && centreBrightness <= 250,
+        brightnessOk: centreBrightness >= 72 && centreBrightness <= 252,
         sharpness,
-        sharpEnough: sharpness >= 46,
+        sharpEnough: sharpness >= 34,
       };
     }
 
@@ -656,9 +725,62 @@
       return current.reduce((total, point, index) => total + Math.hypot(point.x - previous[index].x, point.y - previous[index].y), 0) / 4;
     }
 
+    function cloneQuad(quad) {
+      return quad ? quad.map((point) => ({ x: point.x, y: point.y })) : null;
+    }
+
+    function smoothDocumentQuad(previous, current, weight = DETECTION_SETTINGS.smoothingWeight) {
+      if (!previous || previous.length !== current.length) return cloneQuad(current);
+      const safeWeight = Math.max(.05, Math.min(1, Number(weight) || DETECTION_SETTINGS.smoothingWeight));
+      return current.map((point, index) => ({
+        x: previous[index].x * (1 - safeWeight) + point.x * safeWeight,
+        y: previous[index].y * (1 - safeWeight) + point.y * safeWeight,
+      }));
+    }
+
+    function hasSafeFraming(quad, margin = .012) {
+      return Boolean(quad && quad.length === 4 && quad.every((point) => (
+        point.x > margin && point.x < 1 - margin && point.y > margin && point.y < 1 - margin
+      )));
+    }
+
+    function nextCaptureConfidence(current, observation) {
+      const value = Math.max(0, Math.min(100, Number(current) || 0));
+      if (!observation || !observation.detected) return Math.max(0, value - 7);
+      if (observation.framingOk === false) return Math.max(0, value - 18);
+      if (!observation.qualityOk) return Math.max(0, value - 10);
+      const movement = Number(observation.movement);
+      if (!Number.isFinite(movement)) return Math.min(100, value + 10);
+      if (movement <= .03) return Math.min(100, value + 16);
+      if (movement <= .06) return Math.min(100, value + 8);
+      if (movement <= .1) return Math.max(0, value - 8);
+      return Math.max(0, value - 22);
+    }
+
+    function nextDetectionLock(locked, confidence, missingFrames, qualityMisses, qualityOk) {
+      if (!locked) return Boolean(qualityOk && confidence >= DETECTION_SETTINGS.lockOnConfidence);
+      return confidence > DETECTION_SETTINGS.lockOffConfidence
+        && missingFrames <= DETECTION_SETTINGS.missingFrameGrace
+        && qualityMisses <= DETECTION_SETTINGS.qualityFrameGrace;
+    }
+
     function resetStability(quad) {
-      state.stableFrames = 0;
-      state.previousQuad = quad.map((point) => ({ ...point }));
+      state.captureConfidence = Math.max(0, state.captureConfidence - 18);
+      state.goodFrames = 0;
+      state.previousQuad = cloneQuad(quad);
+    }
+
+    function clearDetectionTracking(clearQuad = true) {
+      state.previousQuad = null;
+      state.captureConfidence = 0;
+      state.missingFrames = 0;
+      state.qualityMisses = 0;
+      state.goodFrames = 0;
+      state.detectionLocked = false;
+      if (clearQuad) {
+        state.latestQuad = null;
+        state.smoothedQuad = null;
+      }
     }
 
     function resizeOverlay() {
@@ -737,8 +859,7 @@
         state.lastCaptureAt = Date.now();
         state.waitingForRemoval = true;
         state.removalFrames = 0;
-        state.stableFrames = 0;
-        state.previousQuad = null;
+        clearDetectionTracking(false);
         renderPages();
         $('flash').classList.remove('fire');
         void $('flash').offsetWidth;

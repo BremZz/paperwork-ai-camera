@@ -91,7 +91,8 @@ function detectDocument(buffer, width, height) {
         const area = Math.abs(cv.contourArea(contour));
         if (area < frameArea * .12 || area > frameArea * .985) continue;
         const perimeter = cv.arcLength(contour, true);
-        for (const epsilon of [.012, .02, .03, .045]) {
+        let foundFourCornerPolygon = false;
+        for (const epsilon of [.012, .02, .03, .045, .065, .085]) {
           const polygon = new cv.Mat();
           try {
             cv.approxPolyDP(contour, polygon, epsilon * perimeter, true);
@@ -101,11 +102,24 @@ function detectDocument(buffer, width, height) {
             const quadArea = polygonArea(ordered);
             if (quadArea < frameArea * .12) continue;
             const rectangularity = quadrilateralQuality(ordered);
-            if (rectangularity < .46) continue;
+            if (rectangularity < .36) continue;
             const score = quadArea * (.65 + rectangularity * .35);
             if (!best || score > best.score) best = { points: ordered, score };
+            foundFourCornerPolygon = true;
           } finally {
             polygon.delete();
+          }
+        }
+
+        if (!foundFourCornerPolygon) {
+          const irregularQuad = contourExtremeQuad(contour);
+          if (irregularQuad) {
+            const quadArea = polygonArea(irregularQuad);
+            const quality = quadrilateralQuality(irregularQuad);
+            if (quadArea >= frameArea * .14 && quality >= .3) {
+              const score = quadArea * (.44 + quality * .24);
+              if (!best || score > best.score) best = { points: irregularQuad, score };
+            }
           }
         }
       } finally {
@@ -115,7 +129,7 @@ function detectDocument(buffer, width, height) {
 
     if (!best) return null;
     const normalized = best.points.map((point) => ({ x: point.x / width, y: point.y / height }));
-    const margin = .028;
+    const margin = .018;
     const inside = normalized.every((point) => point.x > margin && point.x < 1 - margin && point.y > margin && point.y < 1 - margin);
     const brightness = cv.mean(gray)[0];
     const laplacian = own(new cv.Mat());
@@ -129,9 +143,9 @@ function detectDocument(buffer, width, height) {
       quad: normalized,
       inside,
       brightness,
-      brightnessOk: brightness >= 42 && brightness <= 247,
+      brightnessOk: brightness >= 36 && brightness <= 252,
       sharpness,
-      sharpEnough: sharpness >= 34,
+      sharpEnough: sharpness >= 26,
     };
   } finally {
     for (let index = allocations.length - 1; index >= 0; index -= 1) {
@@ -146,6 +160,28 @@ function polygonPoints(polygon) {
     points.push({ x: polygon.intPtr(row, 0)[0], y: polygon.intPtr(row, 0)[1] });
   }
   return points;
+}
+
+function contourExtremeQuad(contour) {
+  let topLeft = null;
+  let topRight = null;
+  let bottomRight = null;
+  let bottomLeft = null;
+  for (let row = 0; row < contour.rows; row += 1) {
+    const values = contour.intPtr(row, 0);
+    const point = { x: values[0], y: values[1] };
+    const sum = point.x + point.y;
+    const difference = point.x - point.y;
+    if (!topLeft || sum < topLeft.score) topLeft = { ...point, score: sum };
+    if (!topRight || difference > topRight.score) topRight = { ...point, score: difference };
+    if (!bottomRight || sum > bottomRight.score) bottomRight = { ...point, score: sum };
+    if (!bottomLeft || difference < bottomLeft.score) bottomLeft = { ...point, score: difference };
+  }
+  const points = [topLeft, topRight, bottomRight, bottomLeft];
+  if (points.some((point) => !point)) return null;
+  const unique = new Set(points.map((point) => Math.round(point.x) + ':' + Math.round(point.y)));
+  if (unique.size !== 4) return null;
+  return points.map(({ x, y }) => ({ x, y }));
 }
 
 function orderCorners(points) {
