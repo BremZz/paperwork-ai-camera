@@ -185,7 +185,7 @@
     .return-actions { display: grid; gap: 10px; margin-top: 23px; }
     .return-actions button { min-height: 54px; border-radius: 15px; font-weight: 800; cursor: pointer; }
     .return-actions button:first-child { border: 0; background: var(--green); color: #061019; }
-    .return-actions button:last-child { border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.05); color: white; }
+    .return-actions button:not(:first-child) { border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.05); color: white; }
   </style>
 </head>
 <body>
@@ -238,6 +238,7 @@
       <h2 id="returnTitle">Sending pages…</h2>
       <p id="returnDetail">Keep this scanner open while Paperwork AI confirms the pages.</p>
       <div class="return-actions">
+        <button id="returnToAppButton" type="button">Return to Paperwork AI</button>
         <button id="retryReturnButton" type="button" hidden>Try sending again</button>
         <button id="closeReturnButton" type="button" hidden>Close scanner</button>
       </div>
@@ -256,6 +257,7 @@
       missingFrameGrace: 5,
       qualityFrameGrace: 3,
     });
+    const MAX_RETURN_ATTEMPTS = 240;
     const state = {
       stream: null,
       pages: [],
@@ -302,11 +304,14 @@
     $('trayClose').addEventListener('click', hideTray);
     $('addPageButton').addEventListener('click', hideTray);
     $('usePagesButton').addEventListener('click', returnPages);
+    $('returnToAppButton').addEventListener('click', returnToPaperworkAi);
     $('retryReturnButton').addEventListener('click', retryReturnPages);
     $('closeReturnButton').addEventListener('click', closeScanner);
     window.addEventListener('resize', resizeOverlay);
     window.addEventListener('orientationchange', () => setTimeout(resizeOverlay, 200));
     window.addEventListener('message', receiveReturnAcknowledgement);
+    window.addEventListener('focus', resumeReturnPages);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) resumeReturnPages(); });
     window.addEventListener('pagehide', stopCamera);
     $('autoBadgeText').textContent = 'Precision starting…';
     initialisePrecisionDetector();
@@ -396,9 +401,15 @@
       } catch (cameraError) {
         const denied = cameraError && (cameraError.name === 'NotAllowedError' || cameraError.name === 'SecurityError');
         showPermissionError(denied
-          ? 'Camera access was not allowed. In Safari, open Page Settings → Camera → Allow, then try again.'
+          ? cameraPermissionHelp(window.navigator.userAgent)
           : 'The rear camera could not start. Close other apps using the camera and try again.');
       }
+    }
+
+    function cameraPermissionHelp(userAgent) {
+      return /\bCriOS\//i.test(String(userAgent || ''))
+        ? 'Camera access was not allowed. On iPhone, open Settings → Apps → Chrome → Camera, allow access, then try again.'
+        : 'Camera access was not allowed. Allow camera access for this site in your browser settings, then try again.';
     }
 
     function showPermissionError(message) {
@@ -1049,14 +1060,27 @@
       state.returnAttempts = 0;
       $('trayView').hidden = true;
       $('scannerView').hidden = true;
-      setReturnStatus('Sending pages…', 'Keep this scanner open while Paperwork AI confirms the pages.');
+      setReturnStatus('Sending pages…', 'Your pages are waiting safely. Tap Return to Paperwork AI if Chrome does not switch automatically.', false, true);
       sendReturnPages();
     }
 
     function retryReturnPages() {
       state.returnAttempts = 0;
       state.returnAcknowledged = false;
-      setReturnStatus('Sending pages…', 'Keep this scanner open while Paperwork AI confirms the pages.');
+      setReturnStatus('Sending pages…', 'Your pages are waiting safely. Tap Return to Paperwork AI if Chrome does not switch automatically.', false, true);
+      sendReturnPages();
+    }
+
+    function returnToPaperworkAi() {
+      sendReturnPages();
+      try {
+        if (window.opener && !window.opener.closed) window.opener.focus();
+      } catch (_) {}
+    }
+
+    function resumeReturnPages() {
+      if (!state.returnPayload || state.returnAcknowledged) return;
+      if (state.returnAttempts >= MAX_RETURN_ATTEMPTS) state.returnAttempts = 0;
       sendReturnPages();
     }
 
@@ -1067,8 +1091,9 @@
       if (!window.opener || window.opener.closed) {
         setReturnStatus(
           'Pages have not been sent',
-          'Paperwork AI could not be reached. Return to Paperwork AI and use the normal camera option for this scan. Nothing has been uploaded yet.',
+          'Paperwork AI could not be reached. Return to its Chrome tab and use the normal camera option for this scan. Nothing has been uploaded yet.',
           true,
+          false,
         );
         return;
       }
@@ -1080,15 +1105,17 @@
           'Pages have not been sent',
           'Paperwork AI could not be reached. Keep this screen open, return to Paperwork AI, then try again.',
           true,
+          true,
         );
         return;
       }
 
       state.returnAttempts += 1;
-      if (state.returnAttempts >= 24) {
+      if (state.returnAttempts >= MAX_RETURN_ATTEMPTS) {
         setReturnStatus(
           'Still waiting for Paperwork AI',
-          'The pages are not confirmed or uploaded. Keep this scanner open, return to Paperwork AI, then tap Try sending again.',
+          'The pages are not confirmed or uploaded. Tap Return to Paperwork AI, then come back here and choose Try sending again if needed.',
+          true,
           true,
         );
         return;
@@ -1104,6 +1131,8 @@
       setReturnStatus(
         'Pages received',
         'Paperwork AI is opening the supplier check. If this screen stays open, close it—the pages are safe.',
+        false,
+        false,
       );
       setTimeout(() => window.close(), 900);
     }
@@ -1112,9 +1141,10 @@
       return Boolean(message && message.type === 'paperwork-ai-pages-received' && message.token === token);
     }
 
-    function setReturnStatus(title, detail, showActions = false) {
+    function setReturnStatus(title, detail, showActions = false, showReturn = true) {
       $('returnTitle').textContent = title;
       $('returnDetail').textContent = detail;
+      $('returnToAppButton').hidden = !showReturn;
       $('retryReturnButton').hidden = !showActions;
       $('closeReturnButton').hidden = !showActions;
       $('returnMessage').hidden = false;
